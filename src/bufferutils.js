@@ -1,196 +1,143 @@
-var assert = require('assert')
-var opcodes = require('./opcodes')
-
+'use strict';
+Object.defineProperty(exports, '__esModule', { value: true });
+const types = require('./types');
+const typeforce = require('typeforce');
+const varuint = require('varuint-bitcoin');
 // https://github.com/feross/buffer/blob/master/index.js#L1127
-function verifuint (value, max) {
-  assert(typeof value === 'number', 'cannot write a non-number as a number')
-  assert(value >= 0, 'specified a negative value for writing an unsigned value')
-  assert(value <= max, 'value is larger than maximum value for type')
-  assert(Math.floor(value) === value, 'value has a fractional component')
+function verifuint(value, max) {
+  if (typeof value !== 'number')
+    throw new Error('cannot write a non-number as a number');
+  if (value < 0)
+    throw new Error('specified a negative value for writing an unsigned value');
+  if (value > max) throw new Error('RangeError: value out of range');
+  if (Math.floor(value) !== value)
+    throw new Error('value has a fractional component');
 }
-
-function pushDataSize (i) {
-  return i < opcodes.OP_PUSHDATA1 ? 1
-  : i < 0xff ? 2
-  : i < 0xffff ? 3
-  : 5
+function readUInt64LE(buffer, offset) {
+  const a = buffer.readUInt32LE(offset);
+  let b = buffer.readUInt32LE(offset + 4);
+  b *= 0x100000000;
+  verifuint(b + a, 0x001fffffffffffff);
+  return b + a;
 }
-
-function readPushDataInt (buffer, offset) {
-  var opcode = buffer.readUInt8(offset)
-  var number, size
-
-  // ~6 bit
-  if (opcode < opcodes.OP_PUSHDATA1) {
-    number = opcode
-    size = 1
-
-  // 8 bit
-  } else if (opcode === opcodes.OP_PUSHDATA1) {
-    number = buffer.readUInt8(offset + 1)
-    size = 2
-
-  // 16 bit
-  } else if (opcode === opcodes.OP_PUSHDATA2) {
-    number = buffer.readUInt16LE(offset + 1)
-    size = 3
-
-  // 32 bit
-  } else {
-    assert.equal(opcode, opcodes.OP_PUSHDATA4, 'Unexpected opcode')
-
-    number = buffer.readUInt32LE(offset + 1)
-    size = 5
+exports.readUInt64LE = readUInt64LE;
+function writeUInt64LE(buffer, value, offset) {
+  verifuint(value, 0x001fffffffffffff);
+  buffer.writeInt32LE(value & -1, offset);
+  buffer.writeUInt32LE(Math.floor(value / 0x100000000), offset + 4);
+  return offset + 8;
+}
+exports.writeUInt64LE = writeUInt64LE;
+function reverseBuffer(buffer) {
+  if (buffer.length < 1) return buffer;
+  let j = buffer.length - 1;
+  let tmp = 0;
+  for (let i = 0; i < buffer.length / 2; i++) {
+    tmp = buffer[i];
+    buffer[i] = buffer[j];
+    buffer[j] = tmp;
+    j--;
   }
-
-  return {
-    opcode: opcode,
-    number: number,
-    size: size
-  }
+  return buffer;
 }
-
-function readUInt64LE (buffer, offset) {
-  var a = buffer.readUInt32LE(offset)
-  var b = buffer.readUInt32LE(offset + 4)
-  b *= 0x100000000
-
-  verifuint(b + a, 0x001fffffffffffff)
-
-  return b + a
+exports.reverseBuffer = reverseBuffer;
+function cloneBuffer(buffer) {
+  const clone = Buffer.allocUnsafe(buffer.length);
+  buffer.copy(clone);
+  return clone;
 }
-
-function readVarInt (buffer, offset) {
-  var t = buffer.readUInt8(offset)
-  var number, size
-
-  // 8 bit
-  if (t < 253) {
-    number = t
-    size = 1
-
-  // 16 bit
-  } else if (t < 254) {
-    number = buffer.readUInt16LE(offset + 1)
-    size = 3
-
-  // 32 bit
-  } else if (t < 255) {
-    number = buffer.readUInt32LE(offset + 1)
-    size = 5
-
-  // 64 bit
-  } else {
-    number = readUInt64LE(buffer, offset + 1)
-    size = 9
+exports.cloneBuffer = cloneBuffer;
+/**
+ * Helper class for serialization of bitcoin data types into a pre-allocated buffer.
+ */
+class BufferWriter {
+  constructor(buffer, offset = 0) {
+    this.buffer = buffer;
+    this.offset = offset;
+    typeforce(types.tuple(types.Buffer, types.UInt32), [buffer, offset]);
   }
-
-  return {
-    number: number,
-    size: size
+  writeUInt8(i) {
+    this.offset = this.buffer.writeUInt8(i, this.offset);
+  }
+  writeInt32(i) {
+    this.offset = this.buffer.writeInt32LE(i, this.offset);
+  }
+  writeUInt32(i) {
+    this.offset = this.buffer.writeUInt32LE(i, this.offset);
+  }
+  writeUInt64(i) {
+    this.offset = writeUInt64LE(this.buffer, i, this.offset);
+  }
+  writeVarInt(i) {
+    varuint.encode(i, this.buffer, this.offset);
+    this.offset += varuint.encode.bytes;
+  }
+  writeSlice(slice) {
+    if (this.buffer.length < this.offset + slice.length) {
+      throw new Error('Cannot write slice out of bounds');
+    }
+    this.offset += slice.copy(this.buffer, this.offset);
+  }
+  writeVarSlice(slice) {
+    this.writeVarInt(slice.length);
+    this.writeSlice(slice);
+  }
+  writeVector(vector) {
+    this.writeVarInt(vector.length);
+    vector.forEach(buf => this.writeVarSlice(buf));
   }
 }
-
-function writePushDataInt (buffer, number, offset) {
-  var size = pushDataSize(number)
-
-  // ~6 bit
-  if (size === 1) {
-    buffer.writeUInt8(number, offset)
-
-  // 8 bit
-  } else if (size === 2) {
-    buffer.writeUInt8(opcodes.OP_PUSHDATA1, offset)
-    buffer.writeUInt8(number, offset + 1)
-
-  // 16 bit
-  } else if (size === 3) {
-    buffer.writeUInt8(opcodes.OP_PUSHDATA2, offset)
-    buffer.writeUInt16LE(number, offset + 1)
-
-  // 32 bit
-  } else {
-    buffer.writeUInt8(opcodes.OP_PUSHDATA4, offset)
-    buffer.writeUInt32LE(number, offset + 1)
+exports.BufferWriter = BufferWriter;
+/**
+ * Helper class for reading of bitcoin data types from a buffer.
+ */
+class BufferReader {
+  constructor(buffer, offset = 0) {
+    this.buffer = buffer;
+    this.offset = offset;
+    typeforce(types.tuple(types.Buffer, types.UInt32), [buffer, offset]);
   }
-
-  return size
-}
-
-function writeUInt64LE (buffer, value, offset) {
-  verifuint(value, 0x001fffffffffffff)
-
-  buffer.writeInt32LE(value & -1, offset)
-  buffer.writeUInt32LE(Math.floor(value / 0x100000000), offset + 4)
-}
-
-function varIntSize (i) {
-  return i < 253 ? 1
-  : i < 0x10000 ? 3
-  : i < 0x100000000 ? 5
-  : 9
-}
-
-function writeVarInt (buffer, number, offset) {
-  var size = varIntSize(number)
-
-  // 8 bit
-  if (size === 1) {
-    buffer.writeUInt8(number, offset)
-
-  // 16 bit
-  } else if (size === 3) {
-    buffer.writeUInt8(253, offset)
-    buffer.writeUInt16LE(number, offset + 1)
-
-  // 32 bit
-  } else if (size === 5) {
-    buffer.writeUInt8(254, offset)
-    buffer.writeUInt32LE(number, offset + 1)
-
-  // 64 bit
-  } else {
-    buffer.writeUInt8(255, offset)
-    writeUInt64LE(buffer, number, offset + 1)
+  readUInt8() {
+    const result = this.buffer.readUInt8(this.offset);
+    this.offset++;
+    return result;
   }
-
-  return size
-}
-
-function varIntBuffer (i) {
-  var size = varIntSize(i)
-  var buffer = new Buffer(size)
-  writeVarInt(buffer, i, 0)
-
-  return buffer
-}
-
-function equal (a, b) {
-  if (a.length !== b.length) return false
-
-  for (var i = 0; i < a.length; ++i) {
-    if (a[i] !== b[i]) return false
+  readInt32() {
+    const result = this.buffer.readInt32LE(this.offset);
+    this.offset += 4;
+    return result;
   }
-
-  return true
+  readUInt32() {
+    const result = this.buffer.readUInt32LE(this.offset);
+    this.offset += 4;
+    return result;
+  }
+  readUInt64() {
+    const result = readUInt64LE(this.buffer, this.offset);
+    this.offset += 8;
+    return result;
+  }
+  readVarInt() {
+    const vi = varuint.decode(this.buffer, this.offset);
+    this.offset += varuint.decode.bytes;
+    return vi;
+  }
+  readSlice(n) {
+    if (this.buffer.length < this.offset + n) {
+      throw new Error('Cannot read slice out of bounds');
+    }
+    const result = this.buffer.slice(this.offset, this.offset + n);
+    this.offset += n;
+    return result;
+  }
+  readVarSlice() {
+    return this.readSlice(this.readVarInt());
+  }
+  readVector() {
+    const count = this.readVarInt();
+    const vector = [];
+    for (let i = 0; i < count; i++) vector.push(this.readVarSlice());
+    return vector;
+  }
 }
-
-function reverse (buffer) {
-  var buffer2 = new Buffer(buffer)
-  Array.prototype.reverse.call(buffer2)
-  return buffer2
-}
-
-module.exports = {
-  equal: equal,
-  pushDataSize: pushDataSize,
-  readPushDataInt: readPushDataInt,
-  readUInt64LE: readUInt64LE,
-  readVarInt: readVarInt,
-  reverse: reverse,
-  varIntBuffer: varIntBuffer,
-  varIntSize: varIntSize,
-  writePushDataInt: writePushDataInt,
-  writeUInt64LE: writeUInt64LE,
-  writeVarInt: writeVarInt
-}
+exports.BufferReader = BufferReader;
