@@ -1,5 +1,5 @@
 {
-  "valid": [
+  "hashes": [
     {
       "hex": "0000000000000001",
       "hash160": "cdb00698f02afd929ffabea308340fa99ac2afa8",
@@ -31,6 +31,13 @@
       "ripemd160": "cad8593dcdef12ee334c97bab9787f07b3f3a1a5",
       "sha1": "10d96fb43aca84e342206887bbeed3065d4e4344",
       "sha256": "a7fb8276035057ed6479c5f2305a96da100ac43f0ac10f277e5ab8c5457429da"
+    }
+  ],
+  "taggedHash": [
+    {
+      "tag": "TapTweak",
+      "hex": "0101010101010101",
+      "result": "71ae15bad52efcecf4c9f672bfbded68a4adb8258f1b95f0d06aefdb5ebd14e9"
     }
   ]
 }
